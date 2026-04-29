@@ -29,7 +29,7 @@ except ImportError:
 from interview_ques_generator import generate_question
 from followup_ques_generator import generate_followup
 from vector_memory import VectorMemory
-from memory_interview_chain import memory_chain
+from memory_interview_chain import get_memory_chain
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
@@ -140,7 +140,7 @@ class InterviewSession:
         
         for attempt in range(max_retries + 1):
             try:
-                response = memory_chain.invoke(
+                response = get_memory_chain().invoke(
                     {
                         'resume': self.resume_str,
                         'role': self.role

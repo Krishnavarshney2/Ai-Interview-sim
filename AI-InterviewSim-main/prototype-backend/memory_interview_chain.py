@@ -13,8 +13,16 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 
-# Load LLM using config
-llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY, temperature=0.7)
+# Lazy-load the LLM to avoid crashing on startup if GROQ_API_KEY is not set
+_llm = None
+
+def get_llm():
+    global _llm
+    if _llm is None:
+        if not GROQ_API_KEY:
+            raise RuntimeError("GROQ_API_KEY is not set. Please configure it in your environment variables.")
+        _llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY, temperature=0.7)
+    return _llm
 
 # Prompt with memory context
 question_prompt = ChatPromptTemplate.from_messages([
@@ -62,12 +70,17 @@ def get_session_history(session_id):
         session_store[session_id] = ChatMessageHistory()
     return session_store[session_id]
 
-# Chain with memory
-interview_chain = question_prompt | llm
+# Chain with memory (created lazily)
+_memory_chain = None
 
-memory_chain = RunnableWithMessageHistory(
-    interview_chain,
-    get_session_history,
-    input_messages_key="resume",
-    history_messages_key="chat_history"
-)
+def get_memory_chain():
+    global _memory_chain
+    if _memory_chain is None:
+        interview_chain = question_prompt | get_llm()
+        _memory_chain = RunnableWithMessageHistory(
+            interview_chain,
+            get_session_history,
+            input_messages_key="resume",
+            history_messages_key="chat_history"
+        )
+    return _memory_chain
