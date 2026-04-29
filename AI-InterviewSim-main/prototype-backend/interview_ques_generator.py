@@ -1,14 +1,15 @@
 import json
-from langchain_ollama import OllamaLLM
+import sys
+import os
+
+# Add project root to path so config can be imported
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from config import LLM_MODEL, GROQ_API_KEY
+
+from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 
-'''def load_resume(file_path):
-  with open(file_path , 'r' , encoding='utf-8') as f:
-    data = json.load(f)
-  return data
-  '''
-
-llm = OllamaLLM(model='mistral')
+llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY)
 
 prompt_template = """
 You are a technical interviewer. Based on the candidate's resume and selected job role, generate the first interview question.
@@ -33,13 +34,13 @@ prompt = PromptTemplate(
 
 interview_chain = prompt | llm
 
-def generate_question(resume_dict , role):
-  
-  resume_str = json.dumps(resume_dict)
-
-  question = interview_chain.invoke({'resume':resume_str , 'role':role})
-
-  return question.strip()
+def generate_question(resume_dict, role):
+    resume_str = json.dumps(resume_dict)
+    
+    response = interview_chain.invoke({'resume': resume_str, 'role': role})
+    
+    # ChatGroq returns AIMessage object, extract content
+    return response.content.strip()
 
 if __name__=='__main__':
   resume_path = 'test-files/Rahul_Resume_provisional__parsed.json'

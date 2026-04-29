@@ -1,13 +1,20 @@
 # memory_interview_chain.py
 
 import json
-from langchain_ollama import OllamaLLM
+import sys
+import os
+
+# Add project root to path so config can be imported
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from config import LLM_MODEL, GROQ_API_KEY
+
+from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 
-# Load LLM
-llm = OllamaLLM(model="mistral")
+# Load LLM using config
+llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY, temperature=0.7)
 
 # Prompt with memory context
 question_prompt = ChatPromptTemplate.from_messages([

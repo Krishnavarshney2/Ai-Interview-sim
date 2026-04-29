@@ -1,7 +1,14 @@
 import fitz  # PyMuPDF
 import json
 import re
-from langchain_ollama import OllamaLLM
+import sys
+import os
+
+# Add project root to path so config can be imported
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from config import LLM_MODEL, GROQ_API_KEY, RESUME_TEXT_LIMIT, RESUME_PARSE_RETRIES
+
+from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 
 
@@ -45,7 +52,7 @@ def setup_llm_chain():
     Setup LLM and prompt chain
     """
     try:
-        llm = OllamaLLM(model="mistral")  # Updated model name
+        llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY, temperature=0.0)
         
         template = """
 You are an intelligent resume parser. Extract information from the resume text and return ONLY valid JSON in this exact format:
@@ -110,42 +117,60 @@ def parse_resume_with_llm(pdf_path, max_retries=3):
     resume_text = extract_text_from_pdf(pdf_path)
     if not resume_text:
         return {"error": "Could not extract text from PDF"}
-    
+
     # Setup LLM chain
     chain = setup_llm_chain()
     if not chain:
         return {"error": "Could not setup LLM chain"}
-    
+
     # Try parsing with retries
     for attempt in range(max_retries):
         try:
             print(f"Attempt {attempt + 1}/{max_retries} to parse resume...")
-            
+
             # Get response from LLM
-            response = chain.invoke({"text":resume_text[:4000]})  # Limit text length
+            response = chain.invoke({"text": resume_text[:RESUME_TEXT_LIMIT]})
             
+            # ChatGroq returns AIMessage object, extract content
+            response_content = response.content if hasattr(response, 'content') else str(response)
+
             # Clean and parse JSON
-            cleaned_response = clean_json_response(response)
+            cleaned_response = clean_json_response(response_content)
             parsed_data = json.loads(cleaned_response)
             
-            print("✅ Successfully parsed resume!")
+            print(f"Successfully parsed resume on attempt {attempt + 1}")
             return parsed_data
             
         except json.JSONDecodeError as e:
-            print(f"❌ JSON parsing error on attempt {attempt + 1}: {e}")
+            print(f"JSON parsing error on attempt {attempt + 1}: {e}")
             if attempt == max_retries - 1:
                 return {
                     "error": "Failed to parse JSON after multiple attempts",
-                    "raw_response": response,
-                    "cleaned_response": cleaned_response
+                    "raw_response": response_content
                 }
-        
+
         except Exception as e:
-            print(f"❌ General error on attempt {attempt + 1}: {e}")
+            print(f"General error on attempt {attempt + 1}: {e}")
             if attempt == max_retries - 1:
                 return {"error": f"Failed to process resume: {str(e)}"}
-    
+
     return {"error": "Unexpected failure"}
+
+
+# ResumeParser Class for API integration
+class ResumeParser:
+    """
+    Wrapper class to make resume parser compatible with FastAPI endpoints
+    """
+    def __init__(self):
+        pass
+    
+    def parse(self, file_path):
+        """
+        Parse resume from PDF file path
+        Returns parsed data as dictionary
+        """
+        return parse_resume_with_llm(file_path)
 
 
 # Step 5: Main execution with better error handling
@@ -154,34 +179,34 @@ def main():
     Main function to run the resume parser
     """
     pdf_path = "test-files/Rahul_Resume_provisional_.pdf"  # Replace with your file path
-    
-    print("🔄 Starting resume parsing...")
-    print(f"📄 Processing file: {pdf_path}")
-    
+
+    print("Starting resume parsing...")
+    print(f"Processing file: {pdf_path}")
+
     # Check if file exists
     try:
         with open(pdf_path, 'rb') as f:
             pass  # Just check if file can be opened
     except FileNotFoundError:
-        print(f"❌ Error: File not found at {pdf_path}")
+        print(f"Error: File not found at {pdf_path}")
         print("Please check the file path and try again.")
         return
     except Exception as e:
-        print(f"❌ Error accessing file: {e}")
+        print(f"Error accessing file: {e}")
         return
-    
+
     # Parse the resume
     result = parse_resume_with_llm(pdf_path)
-    
+
     # Display results
     print("\n" + "="*50)
-    print("📝 PARSED RESUME OUTPUT")
+    print("PARSED RESUME OUTPUT")
     print("="*50)
-    
+
     if "error" in result:
-        print(f"❌ Error: {result['error']}")
+        print(f"Error: {result['error']}")
         if "raw_response" in result:
-            print(f"\n🔍 Raw LLM Response:\n{result['raw_response']}")
+            print(f"\nRaw LLM Response:\n{result['raw_response']}")
     else:
         # Pretty print the JSON
         print(json.dumps(result, indent=2, ensure_ascii=False))

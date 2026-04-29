@@ -1,7 +1,14 @@
-from langchain_ollama import OllamaLLM
+import sys
+import os
+
+# Add project root to path so config can be imported
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from config import LLM_MODEL, GROQ_API_KEY
+
+from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 
-llm = OllamaLLM(model='mistral')
+llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY)
 
 template = """
 You are a professional interview assistant. A candidate has just answered a question in an interview.
@@ -26,9 +33,10 @@ prompt = PromptTemplate(
 
 followup_chain = prompt | llm
 
-def generate_followup(answer,role='Software Developer'):
-  response = followup_chain.invoke({'answer':answer , 'role':role})
-  return response.strip()
+def generate_followup(answer, role='Software Developer'):
+    response = followup_chain.invoke({'answer': answer, 'role': role})
+    # ChatGroq returns AIMessage object, extract content
+    return response.content.strip()
 
 if __name__=='__main__':
   user_answer = """

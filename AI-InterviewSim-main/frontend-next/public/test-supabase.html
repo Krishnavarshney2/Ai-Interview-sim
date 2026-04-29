@@ -1,0 +1,31 @@
+# Test Supabase Auth Connection
+# Run this in your browser console (F12) while on http://localhost:3000
+
+async function testSupabaseAuth() {
+  console.log('Testing Supabase Auth...');
+  
+  // Check if supabase client is loaded
+  const supabaseUrl = 'https://btxklozcxznzyqvykxeo.supabase.co';
+  
+  // Test 1: Check if Supabase is reachable
+  try {
+    const response = await fetch(supabaseUrl + '/auth/v1/verify', {
+      method: 'GET',
+      headers: {
+        'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0eGtsb3pjeHpuenlxdnlreGVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MTcwMTIsImV4cCI6MjA5MTM5MzAxMn0.NCSbEEGlS6Bexkv4-MI5G5Bmtw-3VBS6GsbNcdX3-6Y'
+      }
+    });
+    console.log('Supabase reachable:', response.status === 200 || response.status === 400);
+  } catch (e) {
+    console.error('Supabase NOT reachable:', e);
+  }
+
+  // Test 2: Check auth settings
+  console.log('Check these Supabase settings:');
+  console.log('1. Go to: https://app.supabase.com/project/btxklozcxznzyqvykxeo/auth/providers');
+  console.log('2. Make sure "Email" provider is enabled');
+  console.log('3. Turn OFF "Confirm email" for local testing');
+  console.log('4. Add http://localhost:3000 to Redirect URLs');
+}
+
+testSupabaseAuth();
