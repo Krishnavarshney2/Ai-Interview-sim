@@ -80,14 +80,28 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 # CORS middleware
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o.strip() for o in CORS_ORIGINS],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# For production, set CORS_ORIGINS=https://your-frontend.com,https://your-frontend-2.com
+# For development/testing, you can use CORS_ORIGINS=* (allows all origins)
+CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+
+if CORS_ORIGINS_ENV.strip() == "*":
+    # Allow all origins (use with caution in production)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,  # Must be False when using allow_origins=["*"]
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    CORS_ORIGINS = [o.strip() for o in CORS_ORIGINS_ENV.split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # ============================================================
 # Constants
