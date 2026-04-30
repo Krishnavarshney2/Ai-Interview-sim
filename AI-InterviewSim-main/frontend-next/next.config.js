@@ -8,7 +8,13 @@ const nextConfig = {
   async headers() {
     // Get environment variables for dynamic CSP configuration
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     const isDevelopment = process.env.NODE_ENV === 'development';
+
+    // Build connect-src with all allowed origins
+    const connectSrc = isDevelopment
+      ? `connect-src 'self' http://localhost:8000 ${supabaseUrl} ${apiUrl}`
+      : `connect-src 'self' ${supabaseUrl} ${apiUrl}`;
 
     return [
       {
@@ -25,9 +31,6 @@ const nextConfig = {
             key: 'X-Content-Type-Options',
             value: 'nosniff',
           },
-          // Remove deprecated X-XSS-Protection header (can introduce vulnerabilities)
-          // Modern browsers ignore this, and CSP provides better protection
-
           // Enforce HTTPS in production
           {
             key: 'Strict-Transport-Security',
@@ -45,39 +48,18 @@ const nextConfig = {
             key: 'Permissions-Policy',
             value: 'camera=(self), microphone=(self), geolocation=()',
           },
-          // Additional security headers
-          {
-            key: 'Cross-Origin-Opener-Policy',
-            value: 'same-origin',
-          },
-          {
-            key: 'Cross-Origin-Embedder-Policy',
-            value: 'require-corp',
-          },
-          {
-            key: 'Cross-Origin-Resource-Policy',
-            value: 'same-origin',
-          },
-          {
-            key: 'X-DNS-Prefetch-Control',
-            value: 'off',
-          },
-          // Content Security Policy (CSP) - stricter in production
+          // Content Security Policy (CSP)
           {
             key: 'Content-Security-Policy',
             value: [
               "default-src 'self'",
-              // Remove 'unsafe-eval' in production for better security
               isDevelopment
                 ? "script-src 'self' 'unsafe-eval' 'unsafe-inline'"
                 : "script-src 'self' 'unsafe-inline'",
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               "font-src 'self' https://fonts.gstatic.com",
               "img-src 'self' data: blob: https://lh3.googleusercontent.com",
-              // Only include localhost in development
-              isDevelopment
-                ? `connect-src 'self' http://localhost:8000 ${supabaseUrl}`
-                : `connect-src 'self' ${supabaseUrl}`,
+              connectSrc,
               "media-src 'self' blob:",
               "frame-ancestors 'none'",
               "base-uri 'self'",
