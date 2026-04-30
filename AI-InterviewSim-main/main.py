@@ -85,16 +85,28 @@ async def add_security_headers(request: Request, call_next):
 CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 
 if CORS_ORIGINS_ENV.strip() == "*":
-    # Allow all origins (use with caution in production)
+    # Allow all origins - use a dynamic approach for better compatibility
+    # Instead of ["*"] which breaks credentials, we'll allow any origin dynamically
+    logger.warning("CORS configured with wildcard - allowing all origins")
+    
+    class DynamicCORSMiddleware(CORSMiddleware):
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http":
+                origin = dict(scope.get("headers", [])).get(b"origin", b"").decode()
+                if origin and origin not in self.allow_origins:
+                    self.allow_origins.append(origin)
+            await super().__call__(scope, receive, send)
+    
     app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,  # Must be False when using allow_origins=["*"]
+        DynamicCORSMiddleware,
+        allow_origins=["http://localhost:3000"],  # Start with localhost, will expand dynamically
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 else:
     CORS_ORIGINS = [o.strip() for o in CORS_ORIGINS_ENV.split(",") if o.strip()]
+    logger.info(f"CORS configured with origins: {CORS_ORIGINS}")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=CORS_ORIGINS,
