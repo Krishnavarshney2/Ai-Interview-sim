@@ -79,41 +79,23 @@ async def add_security_headers(request: Request, call_next):
     
     return response
 
-# CORS middleware
-# For production, set CORS_ORIGINS=https://your-frontend.com,https://your-frontend-2.com
-# For development/testing, you can use CORS_ORIGINS=* (allows all origins)
+# CORS middleware - simple and reliable
+# For production, set CORS_ORIGINS=https://your-frontend.com
+# For development, defaults to localhost:3000
 CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+CORS_ORIGINS = [o.strip() for o in CORS_ORIGINS_ENV.split(",") if o.strip()]
 
-if CORS_ORIGINS_ENV.strip() == "*":
-    # Allow all origins - use a dynamic approach for better compatibility
-    # Instead of ["*"] which breaks credentials, we'll allow any origin dynamically
-    logger.warning("CORS configured with wildcard - allowing all origins")
-    
-    class DynamicCORSMiddleware(CORSMiddleware):
-        async def __call__(self, scope, receive, send):
-            if scope["type"] == "http":
-                origin = dict(scope.get("headers", [])).get(b"origin", b"").decode()
-                if origin and origin not in self.allow_origins:
-                    self.allow_origins.append(origin)
-            await super().__call__(scope, receive, send)
-    
-    app.add_middleware(
-        DynamicCORSMiddleware,
-        allow_origins=["http://localhost:3000"],  # Start with localhost, will expand dynamically
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-else:
-    CORS_ORIGINS = [o.strip() for o in CORS_ORIGINS_ENV.split(",") if o.strip()]
-    logger.info(f"CORS configured with origins: {CORS_ORIGINS}")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=CORS_ORIGINS,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+logger.info(f"CORS configured with origins: {CORS_ORIGINS}")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=86400,  # Cache preflight for 24 hours
+)
 
 # ============================================================
 # Constants
