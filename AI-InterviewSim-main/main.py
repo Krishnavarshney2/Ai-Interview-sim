@@ -22,6 +22,7 @@ import time
 import secrets
 import logging
 import tempfile
+import asyncio
 from pathlib import Path
 from datetime import datetime
 
@@ -205,7 +206,20 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
             return None
         
         sb = create_client(supabase_url, supabase_key)
-        user_response = sb.auth.get_user(token)
+        
+        # Run sync Supabase auth call in a thread pool to avoid blocking the async event loop.
+        # A blocking HTTP call here hangs ALL concurrent requests in production.
+        def _get_user_sync():
+            return sb.auth.get_user(token)
+        
+        try:
+            user_response = await asyncio.wait_for(
+                asyncio.to_thread(_get_user_sync),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Supabase auth validation timed out")
+            return None
         
         if not user_response or not user_response.user:
             return None
