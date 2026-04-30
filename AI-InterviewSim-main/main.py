@@ -358,6 +358,105 @@ async def health_check(db: AsyncSession = Depends(get_db)):
 # ============================================================
 # Resume Upload (Supabase Storage)
 # ============================================================
+async def _process_upload(file: UploadFile, user_id: str, db: AsyncSession):
+    """Shared upload processing logic."""
+    # Validate file
+    if not file.filename or not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
+    
+    logger.info(f"Reading file: {file.filename}")
+    file_content = await file.read()
+    logger.info(f"File read: {len(file_content)} bytes")
+    
+    if len(file_content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large. Max 10MB.")
+    
+    if len(file_content) < 100:
+        raise HTTPException(status_code=400, detail="File too small or corrupted.")
+    
+    safe_filename = os.path.basename(file.filename)
+    logger.info(f"Processing resume upload: {safe_filename}")
+    
+    # Upload to Supabase Storage (run sync call in thread pool)
+    storage_key = None
+    try:
+        def _upload_sync():
+            import asyncio
+            # supabase storage client is sync, run it in thread
+            return upload_resume(file_content, safe_filename, user_id)
+        
+        # upload_resume is async but calls sync supabase client inside
+        storage_info = await asyncio.wait_for(upload_resume(file_content, safe_filename, user_id), timeout=10.0)
+        storage_key = storage_info["path"]
+        logger.info(f"Resume uploaded to Supabase Storage: {storage_key}")
+    except asyncio.TimeoutError:
+        logger.error("Supabase Storage upload timed out after 10s")
+        storage_key = None
+    except Exception as e:
+        logger.error(f"Supabase Storage upload failed: {e}")
+        storage_key = None
+    
+    if not storage_key:
+        # Fallback to local storage
+        storage_key = f"local/{user_id}/{secrets.token_hex(8)}.pdf"
+        local_path = UPLOAD_DIR / storage_key.replace("local/", "")
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(local_path, "wb") as f:
+            f.write(file_content)
+    
+    # Parse resume locally (run in thread pool to avoid blocking event loop)
+    parsed_data = {"skills": [], "experience": [], "raw_text": ""}
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', dir=UPLOAD_DIR) as tmp:
+        tmp.write(file_content)
+        tmp_path = tmp.name
+    
+    try:
+        def _parse_sync():
+            parser = ResumeParser()
+            return parser.parse(tmp_path)
+        
+        parsed_data = await asyncio.wait_for(
+            asyncio.to_thread(_parse_sync),
+            timeout=15.0
+        )
+        
+        if "error" in parsed_data:
+            logger.warning(f"Resume parsing warning: {parsed_data['error']}")
+    except asyncio.TimeoutError:
+        logger.error("Resume parsing timed out after 15s")
+        parsed_data = {"error": "Parsing timed out", "skills": [], "experience": []}
+    except Exception as e:
+        logger.error(f"Resume parsing failed: {e}")
+        parsed_data = {"error": str(e), "skills": [], "experience": []}
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+    
+    # Deactivate old resumes and save new one to DB
+    from uuid import UUID as PyUUID
+    await ResumeRepository.deactivate_all_for_user(db, PyUUID(user_id))
+    resume = await ResumeRepository.create(
+        db,
+        user_id=PyUUID(user_id),
+        storage_key=storage_key,
+        file_name=safe_filename,
+        file_size=len(file_content),
+        parsed_data=parsed_data,
+        raw_text=parsed_data.get("raw_text", "")
+    )
+    
+    logger.info(f"Resume saved to database: {resume.id}")
+    
+    return {
+        "success": True,
+        "data": parsed_data,
+        "resume_id": str(resume.id),
+        "message": "Resume parsed and stored successfully"
+    }
+
+
 @app.post("/api/parse-resume")
 async def parse_resume(
     request: Request,
@@ -386,84 +485,40 @@ async def parse_resume(
         # Don't block upload if rate limiter is down
 
     try:
-        # Validate file
-        if not file.filename or not file.filename.lower().endswith('.pdf'):
-            logger.warning(f"Invalid file type: {file.filename}")
-            raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
-        
-        logger.info(f"Reading file: {file.filename}")
-        file_content = await file.read()
-        logger.info(f"File read: {len(file_content)} bytes")
-        
-        if len(file_content) > MAX_FILE_SIZE:
-            raise HTTPException(status_code=413, detail="File too large. Max 10MB.")
-        
-        if len(file_content) < 100:
-            raise HTTPException(status_code=400, detail="File too small or corrupted.")
-        
-        safe_filename = os.path.basename(file.filename)
-        logger.info(f"Processing resume upload: {safe_filename}")
-        
-        # Upload to Supabase Storage
-        try:
-            storage_info = await upload_resume(file_content, safe_filename, str(user.id))
-            storage_key = storage_info["path"]
-            logger.info(f"Resume uploaded to Supabase Storage: {storage_key}")
-        except Exception as e:
-            logger.error(f"Supabase Storage upload failed: {e}")
-            # Fallback to local storage
-            storage_key = f"local/{user.id}/{secrets.token_hex(8)}.pdf"
-            local_path = UPLOAD_DIR / storage_key.replace("local/", "")
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(local_path, "wb") as f:
-                f.write(file_content)
-        
-        # Parse resume locally
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', dir=UPLOAD_DIR) as tmp:
-            tmp.write(file_content)
-            tmp_path = tmp.name
-        
-        try:
-            parser = ResumeParser()
-            parsed_data = parser.parse(tmp_path)
-            
-            if "error" in parsed_data:
-                logger.warning(f"Resume parsing warning: {parsed_data['error']}")
-        except Exception as e:
-            logger.error(f"Resume parsing failed: {e}")
-            parsed_data = {"error": str(e), "skills": [], "experience": []}
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-        
-        # Deactivate old resumes and save new one to DB
-        await ResumeRepository.deactivate_all_for_user(db, user.id)
-        resume = await ResumeRepository.create(
-            db,
-            user_id=user.id,
-            storage_key=storage_key,
-            file_name=safe_filename,
-            file_size=len(file_content),
-            parsed_data=parsed_data,
-            raw_text=parsed_data.get("raw_text", "")
-        )
-        
-        logger.info(f"Resume saved to database: {resume.id}")
-        
-        return JSONResponse({
-            "success": True,
-            "data": parsed_data,
-            "resume_id": str(resume.id),
-            "message": "Resume parsed and stored successfully"
-        })
-        
+        result = await _process_upload(file, str(user.id), db)
+        return JSONResponse(result)
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Resume upload failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to process resume.")
+
+
+@app.post("/api/parse-resume-debug")
+async def parse_resume_debug(
+    request: Request,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    DEBUG endpoint: parse resume WITHOUT auth requirement.
+    Used to isolate whether crashes are from auth or file processing.
+    """
+    logger.info("parse-resume-debug called (NO AUTH)")
+    
+    # Use a dummy user ID for debug
+    dummy_user_id = "00000000-0000-0000-0000-000000000000"
+    
+    try:
+        # Ensure dummy user exists
+        user = await UserRepository.get_or_create(db, supabase_uid=dummy_user_id, email="debug@example.com")
+        result = await _process_upload(file, str(user.id), db)
+        return JSONResponse(result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Debug upload failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Debug upload failed: {str(e)}")
 
 
 async def check_subscription_limit(user_id: Any, db: AsyncSession) -> bool:
