@@ -85,11 +85,15 @@ async def add_security_headers(request: Request, call_next):
 CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 CORS_ORIGINS = [o.strip() for o in CORS_ORIGINS_ENV.split(",") if o.strip()]
 
+# Also allow any Vercel preview deployment so redeploys don't break CORS
+CORS_REGEX = r"https://.*\.vercel\.app"
+
 logger.info(f"CORS configured with origins: {CORS_ORIGINS}")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
+    allow_origin_regex=CORS_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -269,6 +273,15 @@ class AnswerRequest(BaseModel):
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "Luminal AI Interview API v2.0.0", "version": "2.0.0"}
+
+@app.get("/debug/cors")
+async def debug_cors():
+    """Return current CORS configuration for debugging."""
+    return {
+        "cors_origins": CORS_ORIGINS,
+        "cors_regex": CORS_REGEX,
+        "environment": os.getenv("ENVIRONMENT", "development"),
+    }
 
 @app.get("/health")
 async def health_check(db: AsyncSession = Depends(get_db)):
