@@ -51,10 +51,12 @@ api.interceptors.response.use(
 export const interviewAPI = {
   // Parse resume from PDF
   parseResume: async (formData: FormData) => {
-    // Do NOT set Content-Type manually — the browser will set it with the
-    // correct multipart boundary automatically. Setting it here strips the
-    // boundary and causes the backend to fail parsing the file.
-    const response = await api.post('/api/parse-resume', formData);
+    // Explicitly delete Content-Type so the browser sets multipart/form-data
+    // with the correct boundary. Axios's default 'application/json' header
+    // causes FastAPI to return 422 when sending FormData.
+    const response = await api.post('/api/parse-resume', formData, {
+      headers: { 'Content-Type': undefined as any },
+    });
     return response.data;
   },
 
