@@ -26,4 +26,4 @@ EXPOSE 8000
 
 # Use shell form CMD to allow environment variable substitution
 # Railway provides PORT env var dynamically
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2 --proxy-headers
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --proxy-headers

@@ -129,14 +129,19 @@ active_sessions: Dict[str, Any] = {}
 # ============================================================
 @app.on_event("startup")
 async def startup():
-    """Initialize database tables on startup."""
+    """Initialize database tables on startup with timeout."""
     logger.info("Starting up Luminal AI API...")
     try:
-        await init_db()
+        # Wrap DB init in timeout so a slow/blocked DB connection doesn't hang forever
+        await asyncio.wait_for(init_db(), timeout=15.0)
         logger.info("Database initialized successfully")
+    except asyncio.TimeoutError:
+        logger.error("Database initialization timed out after 15s. Server will start but DB ops may fail.")
     except Exception as e:
-        logger.error(f"Database initialization failed: {e}")
-        raise
+        logger.error(f"Database initialization failed: {e}", exc_info=True)
+        # Don't crash the server if DB init fails - we can still serve health checks
+
+    logger.info("Luminal AI API startup complete. Ready to serve requests.")
 
 @app.on_event("shutdown")
 async def shutdown():
