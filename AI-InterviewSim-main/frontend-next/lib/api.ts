@@ -51,9 +51,10 @@ api.interceptors.response.use(
 export const interviewAPI = {
   // Parse resume from PDF
   parseResume: async (formData: FormData) => {
-    const response = await api.post('/api/parse-resume', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
+    // Do NOT set Content-Type manually — the browser will set it with the
+    // correct multipart boundary automatically. Setting it here strips the
+    // boundary and causes the backend to fail parsing the file.
+    const response = await api.post('/api/parse-resume', formData);
     return response.data;
   },
 

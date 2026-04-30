@@ -85,6 +85,15 @@ async def add_security_headers(request: Request, call_next):
 CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 CORS_ORIGINS = [o.strip() for o in CORS_ORIGINS_ENV.split(",") if o.strip()]
 
+# Always hardcode known production origins so env-var issues never break prod
+HARDCODED_ORIGINS = [
+    "https://ai-interview-sim-five.vercel.app",
+    "http://localhost:3000",
+]
+for origin in HARDCODED_ORIGINS:
+    if origin not in CORS_ORIGINS:
+        CORS_ORIGINS.append(origin)
+
 # Also allow any Vercel preview deployment so redeploys don't break CORS
 CORS_REGEX = r"https://.*\.vercel\.app"
 
@@ -268,6 +277,33 @@ class AnswerRequest(BaseModel):
     session_id: Optional[str] = Field(None, max_length=100)
 
 # ============================================================
+# Diagnostic Endpoints (no auth, lightweight)
+# ============================================================
+@app.post("/api/test-upload")
+async def test_upload(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """
+    Test endpoint for file upload with NO auth and NO external dependencies.
+    Used to isolate CORS vs backend-crash issues.
+    """
+    logger.info(f"test-upload received: {file.filename}, size unknown yet")
+    try:
+        content = await file.read()
+        logger.info(f"test-upload read {len(content)} bytes")
+        return JSONResponse({
+            "success": True,
+            "filename": file.filename,
+            "size": len(content),
+            "message": "Test upload works"
+        })
+    except Exception as e:
+        logger.error(f"test-upload failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Test upload failed")
+
+
+# ============================================================
 # Health Endpoints
 # ============================================================
 @app.get("/")
@@ -313,20 +349,32 @@ async def parse_resume(
     """
     Parse uploaded resume PDF and store in Supabase Storage + database.
     """
+    logger.info(f"parse-resume called by user={user.id if user else 'none'}")
+
     # Rate limit check
-    rate_check = await check_rate_limit(request, "parse_resume")
-    if not rate_check["allowed"]:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Too many upload requests. Try again in {rate_check['retry_after']}s."
-        )
+    try:
+        rate_check = await check_rate_limit(request, "parse_resume")
+        if not rate_check["allowed"]:
+            logger.warning(f"Rate limit hit for user={user.id if user else 'none'}")
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many upload requests. Try again in {rate_check['retry_after']}s."
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Rate limit check failed: {e}", exc_info=True)
+        # Don't block upload if rate limiter is down
 
     try:
         # Validate file
         if not file.filename or not file.filename.lower().endswith('.pdf'):
+            logger.warning(f"Invalid file type: {file.filename}")
             raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
         
+        logger.info(f"Reading file: {file.filename}")
         file_content = await file.read()
+        logger.info(f"File read: {len(file_content)} bytes")
         
         if len(file_content) > MAX_FILE_SIZE:
             raise HTTPException(status_code=413, detail="File too large. Max 10MB.")
