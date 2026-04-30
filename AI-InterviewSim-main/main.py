@@ -50,11 +50,23 @@ from db.models import Interview, User, Subscription
 from cache.redis_client import check_rate_limit_redis, close_redis, cache_set, cache_get
 from storage.supabase_storage import upload_resume
 
-# Resume parser
-from resume_parser import ResumeParser
+# Lazy-loaded heavy modules (prevent OOM at startup)
+_ResumeParser = None
+_InterviewSession = None
 
-# Interview session (kept in memory for LLM state)
-from interview_session import InterviewSession
+def get_resume_parser():
+    global _ResumeParser
+    if _ResumeParser is None:
+        from resume_parser import ResumeParser
+        _ResumeParser = ResumeParser
+    return _ResumeParser
+
+def get_interview_session():
+    global _InterviewSession
+    if _InterviewSession is None:
+        from interview_session import InterviewSession
+        _InterviewSession = InterviewSession
+    return _InterviewSession
 
 app = FastAPI(title="Luminal AI Interview API", version="2.0.0")
 
@@ -132,6 +144,7 @@ async def startup():
     """Initialize database tables on startup with timeout."""
     logger.info("Starting up Luminal AI API...")
     try:
+        logger.info("About to initialize database...")
         # Wrap DB init in timeout so a slow/blocked DB connection doesn't hang forever
         await asyncio.wait_for(init_db(), timeout=15.0)
         logger.info("Database initialized successfully")
@@ -412,7 +425,7 @@ async def _process_upload(file: UploadFile, user_id: str, db: AsyncSession):
     
     try:
         def _parse_sync():
-            parser = ResumeParser()
+            parser = get_resume_parser()()
             return parser.parse(tmp_path)
         
         parsed_data = await asyncio.wait_for(
@@ -619,6 +632,7 @@ async def start_interview(
         session_id = generate_secure_session_id()
         
         # Create InterviewSession (in-memory LLM state)
+        InterviewSession = get_interview_session()
         session = InterviewSession(
             resume_obj=resume_data,
             role=interview_data.role,
