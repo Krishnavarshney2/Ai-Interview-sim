@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { createMiddlewareClient, isAuthenticated } from './lib/auth-helpers';
 
 // Routes that require authentication
 const PROTECTED_ROUTES = [
@@ -22,103 +21,94 @@ const AUTH_ROUTES = [
   '/auth/signup',
 ];
 
-// Allowed internal paths for redirect validation (prevent open redirect)
-const ALLOWED_REDIRECT_PATHS = [
-  '/dashboard',
-  '/setup',
-  '/interview',
-  '/interview-text',
-  '/feedback',
-  '/auth/login',
-  '/auth/signup',
-  '/',
-];
+// Public routes that NEVER require auth
+const PUBLIC_ROUTES = ['/', '/about', '/contact', '/pricing'];
 
 /**
- * Validate redirect URL to prevent open redirect vulnerability
- * Only allows internal paths from the whitelist
+ * Safe auth check that never throws
  */
-function isValidRedirect(path: string): boolean {
-  // Block external URLs (check for protocol or hostname)
-  if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('//')) {
+async function safeIsAuthenticated(request: NextRequest): Promise<boolean> {
+  try {
+    const { createServerClient } = await import('@supabase/ssr');
+    
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return false;
+    }
+
+    const response = NextResponse.next();
+    const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll().map(cookie => ({
+            name: cookie.name,
+            value: cookie.value,
+          }));
+        },
+        setAll() {},
+      },
+    });
+
+    const { data: { user } } = await supabase.auth.getUser();
+    return !!user;
+  } catch (error) {
+    console.error('Auth check failed:', error);
     return false;
   }
-
-  // Block javascript: and data: URIs
-  if (path.toLowerCase().startsWith('javascript:') || path.toLowerCase().startsWith('data:')) {
-    return false;
-  }
-
-  // Check against whitelist
-  return ALLOWED_REDIRECT_PATHS.some(
-    allowedPath => path === allowedPath || path.startsWith(allowedPath + '/') || path.startsWith(allowedPath + '?')
-  );
 }
 
 export async function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+  try {
+    const { pathname } = request.nextUrl;
 
-  // Allow public routes (homepage, about, etc.) without auth check
-  // This also fixes Vercel deployment preview 403 errors
-  const PUBLIC_ROUTES = ['/', '/about', '/contact', '/pricing'];
-  const isPublicRoute = PUBLIC_ROUTES.some(route => pathname === route);
-  if (isPublicRoute) {
-    return NextResponse.next();
-  }
-
-  // Create a response object that we can modify
-  const response = NextResponse.next();
-
-  // Check if accessing protected route
-  const isProtectedRoute = PROTECTED_ROUTES.some(
-    route => pathname.startsWith(route)
-  );
-
-  // Check if accessing auth route (login/signup)
-  const isAuthRoute = AUTH_ROUTES.some(
-    route => pathname.startsWith(route)
-  );
-
-  // Validate JWT token server-side using Supabase
-  const authenticated = await isAuthenticated(request, response);
-
-  // If accessing protected route without authentication
-  if (isProtectedRoute && !authenticated) {
-    // Redirect to login with validated return URL
-    const loginUrl = new URL('/auth/login', request.url);
-
-    // Only add redirectTo if it's a valid internal path
-    if (isValidRedirect(pathname)) {
-      loginUrl.searchParams.set('redirectTo', pathname);
+    // Always allow public routes
+    if (PUBLIC_ROUTES.includes(pathname)) {
+      return NextResponse.next();
     }
 
-    return NextResponse.redirect(loginUrl);
-  }
+    // Check if accessing protected route
+    const isProtectedRoute = PROTECTED_ROUTES.some(
+      route => pathname === route || pathname.startsWith(route + '/')
+    );
 
-  // If accessing auth route while already authenticated
-  if (isAuthRoute && authenticated) {
-    // Redirect to dashboard
-    return NextResponse.redirect(new URL('/dashboard', request.url));
-  }
+    // Check if accessing auth route (login/signup)
+    const isAuthRoute = AUTH_ROUTES.some(
+      route => pathname === route || pathname.startsWith(route + '/')
+    );
 
-  // Refresh session if needed - Supabase SSR client handles this automatically
-  // by updating cookies in the response
-  
-  // Allow request to continue
-  return response;
+    // If not protected and not auth route, allow through
+    if (!isProtectedRoute && !isAuthRoute) {
+      return NextResponse.next();
+    }
+
+    // Check auth status
+    const authenticated = await safeIsAuthenticated(request);
+
+    // If accessing protected route without authentication
+    if (isProtectedRoute && !authenticated) {
+      const loginUrl = new URL('/auth/login', request.url);
+      loginUrl.searchParams.set('redirectTo', pathname);
+      return NextResponse.redirect(loginUrl);
+    }
+
+    // If accessing auth route while already authenticated
+    if (isAuthRoute && authenticated) {
+      return NextResponse.redirect(new URL('/dashboard', request.url));
+    }
+
+    return NextResponse.next();
+  } catch (error) {
+    console.error('Middleware error:', error);
+    // Fail open - allow the request
+    return NextResponse.next();
+  }
 }
 
-// Configure which paths trigger the middleware
+// Simplified matcher - only run on pages, not static files or API
 export const config = {
   matcher: [
-    /*
-     * Match all request paths except:
-     * - api routes (handled by backend)
-     * - _next/static (static files)
-     * - _next/image (image optimization)
-     * - favicon.ico (favicon)
-     * - public folder files
-     */
-    '/((?!api|_next/static|_next/image|favicon.ico|.*\\..*|$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 };
