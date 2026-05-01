@@ -188,7 +188,7 @@ class InterviewSession:
                 }
             else:
                 round_dict = {
-                    "round_number": self.current_round,
+                    "round_number": self.current_round + 1,
                     "area": "default",
                     "focus": f"Technical assessment for {self.role}",
                     "target_depth": 3,
