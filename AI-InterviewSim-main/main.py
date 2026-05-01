@@ -1044,14 +1044,6 @@ async def submit_answer(
             blueprint_data = session_data.get("blueprint", {})
             rounds_plan = blueprint_data.get("rounds", []) if isinstance(blueprint_data, dict) else []
             
-            if rounds_plan and current_round < len(rounds_plan):
-                round_plan_dict = rounds_plan[current_round]  # Next round (0-indexed)
-                from interview_blueprint import RoundPlan
-                round_plan = RoundPlan(**round_plan_dict)
-                next_question = _generate_mock_question_with_blueprint(
-                    role, current_round + 1, resume_data, round_plan
-                )
-            else:
             # Use blueprint for fallback if available
             blueprint_data = session_data.get("blueprint", {})
             rounds_plan = blueprint_data.get("rounds", []) if isinstance(blueprint_data, dict) else []
