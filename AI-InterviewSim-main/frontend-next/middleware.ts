@@ -57,7 +57,15 @@ function isValidRedirect(path: string): boolean {
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  
+
+  // Allow public routes (homepage, about, etc.) without auth check
+  // This also fixes Vercel deployment preview 403 errors
+  const PUBLIC_ROUTES = ['/', '/about', '/contact', '/pricing'];
+  const isPublicRoute = PUBLIC_ROUTES.some(route => pathname === route);
+  if (isPublicRoute) {
+    return NextResponse.next();
+  }
+
   // Create a response object that we can modify
   const response = NextResponse.next();
 
@@ -78,12 +86,12 @@ export async function middleware(request: NextRequest) {
   if (isProtectedRoute && !authenticated) {
     // Redirect to login with validated return URL
     const loginUrl = new URL('/auth/login', request.url);
-    
+
     // Only add redirectTo if it's a valid internal path
     if (isValidRedirect(pathname)) {
       loginUrl.searchParams.set('redirectTo', pathname);
     }
-    
+
     return NextResponse.redirect(loginUrl);
   }
 
