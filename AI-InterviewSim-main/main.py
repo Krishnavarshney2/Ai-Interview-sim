@@ -54,6 +54,10 @@ from storage.supabase_storage import upload_resume
 _ResumeParser = None
 _InterviewSession = None
 
+def _ai_available() -> bool:
+    """Check if AI modules can be safely loaded. Returns False if GROQ key missing."""
+    return bool(os.getenv("GROQ_API_KEY", "").strip())
+
 def get_resume_parser():
     global _ResumeParser
     if _ResumeParser is None:
@@ -663,29 +667,32 @@ async def start_interview(
         # Generate secure session ID for in-memory LLM state
         session_id = generate_secure_session_id()
         
-        # Try to create AI-powered interview session
+        # Try to create AI-powered interview session (only if GROQ key is configured)
         question = None
         session = None
-        try:
-            logger.info("Loading interview session modules...")
-            InterviewSession = get_interview_session()
-            session = InterviewSession(
-                resume_obj=resume_data,
-                role=interview_data.role,
-                rounds=interview_data.rounds,
-                session_id=session_id
-            )
-            logger.info("InterviewSession created, generating first question...")
-            question = session.ask_question()
-            logger.info(f"AI question generated: {question[:100] if question else 'None'}...")
-        except Exception as llm_error:
-            logger.error(f"AI interview session failed: {llm_error}", exc_info=True)
-            # Fallback: use mock question generator
-            question = _generate_mock_question(interview_data.role, 1, resume_data)
-            logger.info(f"Using mock question due to AI failure: {question[:100]}...")
+        if _ai_available():
+            try:
+                logger.info("Loading interview session modules...")
+                InterviewSession = get_interview_session()
+                session = InterviewSession(
+                    resume_obj=resume_data,
+                    role=interview_data.role,
+                    rounds=interview_data.rounds,
+                    session_id=session_id
+                )
+                logger.info("InterviewSession created, generating first question...")
+                question = session.ask_question()
+                logger.info(f"AI question generated: {question[:100] if question else 'None'}...")
+            except Exception as llm_error:
+                logger.error(f"AI interview session failed: {llm_error}", exc_info=True)
+                session = None
+        else:
+            logger.info("GROQ_API_KEY not set, using mock interview mode")
         
+        # Fallback to mock if AI failed or not configured
         if not question:
             question = _generate_mock_question(interview_data.role, 1, resume_data)
+            logger.info(f"Using mock question: {question[:100]}...")
         
         # Save first question to database
         await InterviewQuestionRepository.create(
@@ -880,87 +887,133 @@ async def submit_answer(
         # Real AI session handling
         session = session_data["session"]
         
-        # Record in LLM session
-        session.provide_answer(answer_data.answer)
-        
-        # Check if interview complete
-        if session.current_round >= session.rounds:
-            logger.info(f"Interview complete: {interview_id}")
+        try:
+            # Record in LLM session
+            session.provide_answer(answer_data.answer)
             
-            # Generate feedback
-            feedback = session.generate_final_feedback()
+            # Check if interview complete
+            if session.current_round >= session.rounds:
+                logger.info(f"Interview complete: {interview_id}")
+                
+                # Generate feedback
+                feedback = session.generate_final_feedback()
+                
+                # Save feedback to DB
+                await FeedbackRepository.create(
+                    db,
+                    interview_id=PyUUID(interview_id),
+                    relevance=feedback.get("relevance", 0),
+                    clarity=feedback.get("clarity", 0),
+                    depth=feedback.get("depth", 0),
+                    examples=feedback.get("examples", 0),
+                    communication=feedback.get("communication", 0),
+                    overall=feedback.get("overall", 0),
+                    summary=feedback.get("summary", ""),
+                    strengths=feedback.get("strengths", []),
+                    growth_areas=feedback.get("growth_areas", [])
+                )
+                
+                # Update interview status
+                duration = int(time.time() - session_data["created_at"])
+                await InterviewRepository.update_status(
+                    db, PyUUID(interview_id), "completed",
+                    overall_score=feedback.get("overall", 0),
+                    duration_seconds=duration
+                )
+                
+                # Clean up in-memory session
+                del active_sessions[answer_data.session_id]
+                
+                return JSONResponse({
+                    "success": True,
+                    "isComplete": True,
+                    "feedback": feedback,
+                    "message": "Interview complete"
+                })
             
-            # Save feedback to DB
-            await FeedbackRepository.create(
-                db,
-                interview_id=PyUUID(interview_id),
-                relevance=feedback.get("relevance", 0),
-                clarity=feedback.get("clarity", 0),
-                depth=feedback.get("depth", 0),
-                examples=feedback.get("examples", 0),
-                communication=feedback.get("communication", 0),
-                overall=feedback.get("overall", 0),
-                summary=feedback.get("summary", ""),
-                strengths=feedback.get("strengths", []),
-                growth_areas=feedback.get("growth_areas", [])
+            # Generate next question
+            next_question = session.ask_question()
+            
+            if not next_question:
+                raise HTTPException(status_code=500, detail="Failed to generate next question.")
+            
+            # Save next question to DB
+            await InterviewQuestionRepository.create(
+                db, PyUUID(interview_id),
+                round_number=session.current_round + 1,
+                question=next_question
             )
             
-            # Update interview status
-            duration = int(time.time() - session_data["created_at"])
-            await InterviewRepository.update_status(
-                db, PyUUID(interview_id), "completed",
-                overall_score=feedback.get("overall", 0),
-                duration_seconds=duration
-            )
+            # Update interview round count
+            await InterviewRepository.increment_round(db, PyUUID(interview_id))
             
-            # Clean up in-memory session
-            del active_sessions[answer_data.session_id]
+            # Check for follow-up
+            followup = None
+            if session.history and session.history[-1].get('followup'):
+                followup = session.history[-1]['followup']
+                # Update DB with followup
+                if current_question:
+                    await InterviewQuestionRepository.record_answer(
+                        db, current_question.id, answer_data.answer,
+                        followup_question=followup
+                    )
+            
+            logger.info(f"Answer recorded for interview {interview_id}, round {session.current_round + 1}")
             
             return JSONResponse({
                 "success": True,
-                "isComplete": True,
-                "feedback": feedback,
-                "message": "Interview complete"
+                "nextQuestion": next_question,
+                "followup": followup,
+                "round": session.current_round + 1,
+                "totalRounds": session.rounds,
+                "isComplete": False,
+                "message": "Answer recorded"
             })
-        
-        # Generate next question
-        next_question = session.ask_question()
-        
-        if not next_question:
-            raise HTTPException(status_code=500, detail="Failed to generate next question.")
-        
-        # Save next question to DB
-        await InterviewQuestionRepository.create(
-            db, PyUUID(interview_id),
-            round_number=session.current_round + 1,
-            question=next_question
-        )
-        
-        # Update interview round count
-        await InterviewRepository.increment_round(db, PyUUID(interview_id))
-        
-        # Check for follow-up
-        followup = None
-        if session.history and session.history[-1].get('followup'):
-            followup = session.history[-1]['followup']
-            # Update DB with followup
-            if current_question:
-                await InterviewQuestionRepository.record_answer(
-                    db, current_question.id, answer_data.answer,
-                    followup_question=followup
+            
+        except Exception as ai_error:
+            logger.error(f"AI answer processing failed: {ai_error}", exc_info=True)
+            # Fallback to mock behavior if AI crashes
+            role = interview.role if interview else "Software Engineer"
+            resume_data = session_data.get("resume_data", {})
+            total_rounds = session.rounds if session else 5
+            current_round = session.current_round + 1 if session else 2
+            
+            if current_round >= total_rounds:
+                feedback = {
+                    "relevance": 3.5, "clarity": 3.8, "depth": 3.2,
+                    "examples": 3.0, "communication": 3.7, "overall": 3.4,
+                    "summary": "Good effort! Your answers showed solid understanding.",
+                    "strengths": ["Clear communication"],
+                    "growth_areas": ["Provide more specific examples"]
+                }
+                await FeedbackRepository.create(
+                    db,
+                    interview_id=PyUUID(interview_id),
+                    relevance=feedback["relevance"],
+                    clarity=feedback["clarity"],
+                    depth=feedback["depth"],
+                    examples=feedback["examples"],
+                    communication=feedback["communication"],
+                    overall=feedback["overall"],
+                    summary=feedback["summary"],
+                    strengths=feedback["strengths"],
+                    growth_areas=feedback["growth_areas"]
                 )
-        
-        logger.info(f"Answer recorded for interview {interview_id}, round {session.current_round + 1}")
-        
-        return JSONResponse({
-            "success": True,
-            "nextQuestion": next_question,
-            "followup": followup,
-            "round": session.current_round + 1,
-            "totalRounds": session.rounds,
-            "isComplete": False,
-            "message": "Answer recorded"
-        })
+                await InterviewRepository.update_status(db, PyUUID(interview_id), "completed",
+                    overall_score=3.4, duration_seconds=int(time.time() - session_data["created_at"]))
+                del active_sessions[answer_data.session_id]
+                return JSONResponse({"success": True, "isComplete": True, "feedback": feedback, "message": "Interview complete"})
+            
+            next_question = _generate_mock_question(role, current_round + 1, resume_data)
+            await InterviewQuestionRepository.create(db, PyUUID(interview_id),
+                round_number=current_round + 1, question=next_question)
+            await InterviewRepository.increment_round(db, PyUUID(interview_id))
+            
+            return JSONResponse({
+                "success": True, "nextQuestion": next_question, "followup": None,
+                "round": current_round + 1, "totalRounds": total_rounds,
+                "isComplete": False, "message": "Answer recorded (AI fallback)"
+            })
         
     except HTTPException:
         raise
