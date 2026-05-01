@@ -753,7 +753,17 @@ async def submit_answer(
         
         # Validate session
         if not answer_data.session_id or answer_data.session_id not in active_sessions:
-            raise HTTPException(status_code=400, detail="No active interview session. Start a new interview.")
+            # No active session - return a generic next question for demo/standalone mode
+            logger.warning(f"No active session for answer, returning demo question. session_id={answer_data.session_id}")
+            return JSONResponse({
+                "success": True,
+                "nextQuestion": "Can you elaborate more on your experience with this technology?",
+                "followup": None,
+                "round": 2,
+                "totalRounds": 5,
+                "isComplete": False,
+                "message": "Answer recorded (demo mode - no active session)"
+            })
         
         session_data = active_sessions[answer_data.session_id]
         

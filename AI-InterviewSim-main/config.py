@@ -42,7 +42,7 @@ if not GROQ_API_KEY:
 #   - gemma2-9b-it (Google's Gemma)
 #   - llama3-70b-8192
 #   - llama3-8b-8192
-LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.1-70b-versatile")
+LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
 
 # Temperature for LLM responses (0.0 = deterministic, 1.0 = creative)
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
