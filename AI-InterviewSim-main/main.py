@@ -53,6 +53,8 @@ from storage.supabase_storage import upload_resume
 # Lazy-loaded heavy modules (prevent OOM at startup)
 _ResumeParser = None
 _InterviewSession = None
+_InterviewIntelligence = None
+_InterviewBlueprint = None
 
 def _ai_available() -> bool:
     """Check if AI modules can be safely loaded. Returns False if GROQ key missing."""
@@ -71,6 +73,20 @@ def get_interview_session():
         from interview_session import InterviewSession
         _InterviewSession = InterviewSession
     return _InterviewSession
+
+def get_interview_intelligence():
+    global _InterviewIntelligence
+    if _InterviewIntelligence is None:
+        from interview_intelligence import InterviewIntelligence
+        _InterviewIntelligence = InterviewIntelligence
+    return _InterviewIntelligence
+
+def get_interview_blueprint():
+    global _InterviewBlueprint
+    if _InterviewBlueprint is None:
+        from interview_blueprint import generate_blueprint
+        _InterviewBlueprint = generate_blueprint
+    return _InterviewBlueprint
 
 app = FastAPI(title="Luminal AI Interview API", version="2.0.0")
 
@@ -140,32 +156,131 @@ SESSION_TTL = 3600  # 1 hour
 # Key: session_id -> InterviewSession object
 active_sessions: Dict[str, Any] = {}
 
-# Mock question bank for when AI is unavailable
-MOCK_QUESTIONS = [
-    "Tell me about yourself and your background in {role}.",
-    "What are your strongest technical skills relevant to {role}?",
-    "Describe a challenging project you worked on and how you overcame obstacles.",
-    "How do you stay current with the latest technologies and industry trends?",
-    "Explain a complex technical concept to a non-technical stakeholder.",
-    "How do you handle tight deadlines and multiple competing priorities?",
-    "Describe your approach to debugging a critical production issue.",
-    "How do you collaborate with team members who have different working styles?",
-    "What metrics do you use to measure the success of your work?",
-    "Tell me about a time you had to learn a new technology quickly.",
-    "How do you approach code reviews and providing feedback to peers?",
-    "Describe your experience with system design and architecture.",
-    "How do you handle disagreements about technical approaches within a team?",
-    "What interests you most about this {role} position?",
-    "Where do you see yourself professionally in the next 3-5 years?",
-]
+# =============================================================================
+# Mock Question Generation v2.0 - Resume-Aware Templates
+# =============================================================================
+
+MOCK_TEMPLATES = {
+    "resume_deep_dive": [
+        "Walk me through {project}. Specifically, what was your role, what technologies did you use, and what was the biggest technical challenge you faced?",
+        "In your work at {company} as {title}, you mentioned working with {skill}. Can you describe a specific situation where you used it to solve a complex problem?",
+        "Your resume highlights {project}. Tell me about the architecture - how did you design it, and what trade-offs did you make?",
+        "You listed {skill} as a core skill. What's the most interesting or challenging thing you've built with it?",
+        "Looking at your experience at {company}, what are you most proud of building there?",
+    ],
+    "system_design": [
+        "Design a system that handles the core functionality of {project} but scaled to 10x users. Walk me through your approach.",
+        "You have experience with {skill}. How would you design a distributed system using {skill} to handle 100,000 requests per second?",
+        "Design a URL shortener. How would you handle high availability, and what database would you choose?",
+        "How would you design the notification system for a platform like {project}? Consider delivery guarantees and latency.",
+        "Design a real-time chat system. What technologies would you use and why?",
+    ],
+    "ml_system_design": [
+        "Design a machine learning pipeline for {project}. How would you handle data collection, feature engineering, model training, and deployment?",
+        "You mentioned {skill}. How would you design a recommendation system using it at scale?",
+        "Design an A/B testing framework for evaluating ML models in production.",
+    ],
+    "coding": [
+        "Given an array of integers, find the two numbers that add up to a specific target. What's your approach and what's the time complexity?",
+        "Implement a function to check if a string is a valid palindrome, ignoring spaces and punctuation.",
+        "Design a class to implement a stack that supports push, pop, and retrieving the minimum element in O(1) time.",
+        "Write a function to merge two sorted arrays into one sorted array without using extra space.",
+        "Given a binary tree, write a function to check if it's balanced.",
+    ],
+    "behavioral": [
+        "Tell me about a time when you had a major disagreement with a teammate about a technical approach. How did you resolve it?",
+        "Describe a project that failed or didn't meet expectations. What did you learn from it?",
+        "You mentioned {project}. What would you do differently if you were to rebuild it from scratch today?",
+        "Tell me about a time you had to learn a new technology quickly to deliver on a deadline.",
+        "Describe a situation where you had to optimize performance. What was the bottleneck and how did you fix it?",
+    ],
+    "architecture": [
+        "You worked on {project}. How did the architecture evolve over time? What technical debt did you accumulate?",
+        "If you were to migrate {project} from a monolith to microservices, how would you approach it?",
+        "What monitoring and observability would you set up for {project}?",
+        "How would you ensure data consistency in a distributed system like {project}?",
+        "You mentioned {skill}. What are its limitations and when would you NOT use it?",
+    ],
+    "domain_knowledge": [
+        "What are the key differences between REST and GraphQL? When would you choose one over the other?",
+        "Explain how database indexing works. When would adding an index hurt performance?",
+        "What is the CAP theorem and how does it affect system design?",
+        "Explain the difference between processes and threads. When would you use one over the other?",
+        "What are the key considerations when designing an API for third-party developers?",
+    ],
+    "default": [
+        "Tell me about your experience with {skill} in the context of {role}.",
+        "Walk me through a recent technical challenge you faced and how you solved it.",
+        "What excites you most about working as a {role}?",
+        "Describe your ideal development workflow. What tools and practices do you find most valuable?",
+        "How do you approach learning a new codebase or technology?",
+    ],
+}
+
+
+def _extract_resume_context(resume_data: dict) -> dict:
+    """Extract key context from resume data for mock question generation."""
+    exp = resume_data.get("experience", []) if isinstance(resume_data, dict) else []
+    projects = resume_data.get("projects", []) if isinstance(resume_data, dict) else []
+    skills = resume_data.get("skills", []) if isinstance(resume_data, dict) else []
+    
+    # Get strongest project or first project
+    project_name = "your project"
+    if projects and isinstance(projects[0], dict):
+        project_name = projects[0].get("title", "your project")
+    elif projects and isinstance(projects[0], str):
+        project_name = projects[0]
+    
+    # Get first skill
+    skill = skills[0] if skills else "this technology"
+    
+    # Get first experience
+    company = "your company"
+    title = "your role"
+    if exp and isinstance(exp[0], dict):
+        company = exp[0].get("company", "your company")
+        title = exp[0].get("title", "your role")
+    
+    return {
+        "project": project_name,
+        "skill": skill,
+        "company": company,
+        "title": title,
+    }
+
 
 def _generate_mock_question(role: str, round_num: int, resume_data: dict) -> str:
     """Generate a mock question when AI/LLM is unavailable."""
-    import random
-    # Use round number to pick a question deterministically, but vary by role
-    idx = (round_num - 1 + hash(role) % 5) % len(MOCK_QUESTIONS)
-    question = MOCK_QUESTIONS[idx]
-    return question.format(role=role)
+    ctx = _extract_resume_context(resume_data)
+    templates = MOCK_TEMPLATES["default"]
+    template = templates[(round_num - 1) % len(templates)]
+    
+    try:
+        return template.format(role=role, **ctx)
+    except KeyError:
+        return f"Tell me about your experience with {ctx['skill']} in the context of {role}."
+
+
+def _generate_mock_question_with_blueprint(role: str, round_num: int, resume_data: dict, round_plan) -> str:
+    """Generate a mock question guided by the interview blueprint."""
+    ctx = _extract_resume_context(resume_data)
+    area = round_plan.area if hasattr(round_plan, 'area') else "default"
+    focus = round_plan.focus if hasattr(round_plan, 'focus') else role
+    
+    templates = MOCK_TEMPLATES.get(area, MOCK_TEMPLATES["default"])
+    template = templates[(round_num - 1) % len(templates)]
+    
+    try:
+        question = template.format(role=role, focus=focus, **ctx)
+    except KeyError:
+        question = f"Tell me about {focus} in the context of your work as {role}."
+    
+    # Append context from blueprint if available
+    context = round_plan.context_from_resume if hasattr(round_plan, 'context_from_resume') else ""
+    if context and len(context) > 20:
+        question += f" (Context: You've worked with {context[:100]}...)"
+    
+    return question
 
 # ============================================================
 # Startup / Shutdown
@@ -478,16 +593,34 @@ async def _process_upload(file: UploadFile, user_id: str, db: AsyncSession):
         except Exception:
             pass
     
+    # Generate interview intelligence from parsed resume
+    interview_intelligence = None
+    try:
+        logger.info("Generating interview intelligence from resume...")
+        intel_class = get_interview_intelligence()
+        intel_obj = intel_class(parsed_data)
+        interview_intelligence = intel_obj.to_dict()
+        logger.info(f"Interview intelligence generated: {len(interview_intelligence.get('interview_intelligence', {}).get('deep_dive_topics', []))} topics found")
+    except Exception as e:
+        logger.warning(f"Interview intelligence generation failed: {e}")
+        interview_intelligence = None
+    
     # Deactivate old resumes and save new one to DB
     from uuid import UUID as PyUUID
     await ResumeRepository.deactivate_all_for_user(db, PyUUID(user_id))
+    
+    # Merge intelligence into parsed_data for storage
+    stored_data = dict(parsed_data)
+    if interview_intelligence:
+        stored_data["_interview_intelligence"] = interview_intelligence.get("interview_intelligence", {})
+    
     resume = await ResumeRepository.create(
         db,
         user_id=PyUUID(user_id),
         storage_key=storage_key,
         file_name=safe_filename,
         file_size=len(file_content),
-        parsed_data=parsed_data,
+        parsed_data=stored_data,
         raw_text=parsed_data.get("raw_text", "")
     )
     
@@ -496,6 +629,7 @@ async def _process_upload(file: UploadFile, user_id: str, db: AsyncSession):
     return {
         "success": True,
         "data": parsed_data,
+        "interview_intelligence": interview_intelligence.get("interview_intelligence", {}) if interview_intelligence else {},
         "resume_id": str(resume.id),
         "message": "Resume parsed and stored successfully"
     }
@@ -664,6 +798,40 @@ async def start_interview(
         if resume and resume.parsed_data:
             resume_data = resume.parsed_data
         
+        # Extract interview intelligence from resume
+        interview_intelligence = None
+        if resume and resume.parsed_data:
+            try:
+                intel_data = resume.parsed_data.get("_interview_intelligence", {})
+                if intel_data:
+                    interview_intelligence = resume.parsed_data
+                    logger.info(f"Loaded interview intelligence from resume: {len(intel_data.get('deep_dive_topics', []))} topics")
+                else:
+                    # Generate intelligence on the fly
+                    intel_class = get_interview_intelligence()
+                    intel_obj = intel_class(resume.parsed_data)
+                    interview_intelligence = intel_obj.to_dict()
+                    logger.info("Generated fresh interview intelligence")
+            except Exception as e:
+                logger.warning(f"Failed to load/generate interview intelligence: {e}")
+        
+        # Generate interview blueprint
+        blueprint = None
+        if interview_intelligence:
+            try:
+                blueprint_gen = get_interview_blueprint()
+                blueprint = blueprint_gen(
+                    role=interview_data.role,
+                    total_rounds=interview_data.rounds,
+                    difficulty=interview_data.rounds,  # Use rounds as difficulty proxy
+                    resume_intelligence=interview_intelligence,
+                )
+                logger.info(f"Interview blueprint generated with {len(blueprint.rounds)} rounds")
+                for r in blueprint.rounds:
+                    logger.info(f"  Round {r.round_number}: {r.area} - {r.focus[:60]}...")
+            except Exception as e:
+                logger.warning(f"Blueprint generation failed: {e}")
+        
         # Generate secure session ID for in-memory LLM state
         session_id = generate_secure_session_id()
         
@@ -678,7 +846,9 @@ async def start_interview(
                     resume_obj=resume_data,
                     role=interview_data.role,
                     rounds=interview_data.rounds,
-                    session_id=session_id
+                    session_id=session_id,
+                    resume_intelligence=interview_intelligence,
+                    blueprint=blueprint,
                 )
                 logger.info("InterviewSession created, generating first question...")
                 question = session.ask_question()
@@ -691,7 +861,14 @@ async def start_interview(
         
         # Fallback to mock if AI failed or not configured
         if not question:
-            question = _generate_mock_question(interview_data.role, 1, resume_data)
+            if blueprint and blueprint.rounds:
+                # Use blueprint-guided mock question
+                first_round = blueprint.rounds[0]
+                question = _generate_mock_question_with_blueprint(
+                    interview_data.role, 1, resume_data, first_round
+                )
+            else:
+                question = _generate_mock_question(interview_data.role, 1, resume_data)
             logger.info(f"Using mock question: {question[:100]}...")
         
         # Save first question to database
@@ -705,7 +882,9 @@ async def start_interview(
                 "session": session,
                 "interview_id": str(interview.id),
                 "user_id": str(user.id),
-                "created_at": time.time()
+                "created_at": time.time(),
+                "blueprint": blueprint.to_dict() if blueprint else None,
+                "interview_intelligence": interview_intelligence,
             }
         else:
             # Store minimal session data for mock mode
@@ -717,7 +896,9 @@ async def start_interview(
                 "current_round": 1,
                 "total_rounds": interview_data.rounds,
                 "role": interview_data.role,
-                "resume_data": resume_data
+                "resume_data": resume_data,
+                "blueprint": blueprint.to_dict() if blueprint else None,
+                "interview_intelligence": interview_intelligence,
             }
         
         logger.info(f"Interview started: db_id={interview.id}, session={session_id}, mock={not session}")
@@ -859,8 +1040,30 @@ async def submit_answer(
                     "message": "Interview complete"
                 })
             
-            # Generate next mock question
-            next_question = _generate_mock_question(role, current_round + 1, resume_data)
+            # Generate next mock question (use blueprint if available)
+            blueprint_data = session_data.get("blueprint", {})
+            rounds_plan = blueprint_data.get("rounds", []) if isinstance(blueprint_data, dict) else []
+            
+            if rounds_plan and current_round < len(rounds_plan):
+                round_plan_dict = rounds_plan[current_round]  # Next round (0-indexed)
+                from interview_blueprint import RoundPlan
+                round_plan = RoundPlan(**round_plan_dict)
+                next_question = _generate_mock_question_with_blueprint(
+                    role, current_round + 1, resume_data, round_plan
+                )
+            else:
+            # Use blueprint for fallback if available
+            blueprint_data = session_data.get("blueprint", {})
+            rounds_plan = blueprint_data.get("rounds", []) if isinstance(blueprint_data, dict) else []
+            if rounds_plan and current_round < len(rounds_plan):
+                round_plan_dict = rounds_plan[current_round]
+                from interview_blueprint import RoundPlan
+                round_plan = RoundPlan(**round_plan_dict)
+                next_question = _generate_mock_question_with_blueprint(
+                    role, current_round + 1, resume_data, round_plan
+                )
+            else:
+                next_question = _generate_mock_question(role, current_round + 1, resume_data)
             
             # Save next question to DB
             await InterviewQuestionRepository.create(
@@ -869,19 +1072,10 @@ async def submit_answer(
                 question=next_question
             )
             
-            # Update interview round count
-            await InterviewRepository.increment_round(db, PyUUID(interview_id))
-            
-            logger.info(f"Mock answer recorded for interview {interview_id}, round {current_round + 1}")
-            
             return JSONResponse({
-                "success": True,
-                "nextQuestion": next_question,
-                "followup": None,
-                "round": current_round + 1,
-                "totalRounds": total_rounds,
-                "isComplete": False,
-                "message": "Answer recorded"
+                "success": True, "nextQuestion": next_question, "followup": None,
+                "round": current_round + 1, "totalRounds": total_rounds,
+                "isComplete": False, "message": "Answer recorded (AI fallback)"
             })
         
         # Real AI session handling
