@@ -375,12 +375,62 @@ Otherwise, respond with ONLY the follow-up question (max 2 sentences).
     return followup
 
 
-# Backward compatibility with old memory_interview_chain
+# Real memory chain for backward compatibility
 def get_memory_chain():
-    """Legacy compatibility - returns a simple wrapper."""
-    class LegacyChainWrapper:
+    """Returns a chain wrapper that uses the new round-specific prompts."""
+    class RealChainWrapper:
+        def __init__(self):
+            self._llm = None
+        
         def invoke(self, inputs, config=None):
-            """Fallback invoke for old code."""
+            """Generate a question using the new system."""
             from langchain_core.messages import AIMessage
-            return AIMessage(content="Let's start with your background. Tell me about your most significant project.")
-    return LegacyChainWrapper()
+            
+            # Extract inputs
+            resume_str = inputs.get('resume', '{}')
+            role = inputs.get('role', 'Software Engineer')
+            
+            try:
+                resume_data = json.loads(resume_str) if isinstance(resume_str, str) else resume_str
+            except:
+                resume_data = {}
+            
+            # Build a simple round plan
+            round_plan = {
+                "round_number": 1,
+                "area": "resume_deep_dive",
+                "focus": f"Deep dive into {role} experience",
+                "target_depth": 3,
+                "context_from_resume": resume_str[:300],
+                "role_context": role,
+            }
+            
+            # Build intelligence
+            intelligence = {
+                "name": resume_data.get("name", "Candidate"),
+                "skills": resume_data.get("skills", []),
+                "experience": resume_data.get("experience", []),
+                "projects": resume_data.get("projects", []),
+                "interview_intelligence": {
+                    "deep_dive_topics": [{"area": "Experience", "context": resume_str[:200]}],
+                    "tech_depth": {"primary_stack": resume_data.get("skills", [])[:5]},
+                }
+            }
+            
+            try:
+                question = generate_round_question(
+                    round_plan=round_plan,
+                    resume_intelligence=intelligence,
+                    chat_history=[],
+                )
+            except Exception as e:
+                logger = __import__('logging').getLogger(__name__)
+                logger.error(f"Real chain question generation failed: {e}")
+                question = None
+            
+            if not question:
+                question = f"Tell me about your experience with {role} and walk me through your most significant project."
+            
+            return AIMessage(content=question)
+    
+    return RealChainWrapper()

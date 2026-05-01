@@ -123,14 +123,16 @@ class InterviewSession:
             logger.info("Interview complete")
             return None
 
-        self.current_round += 1
+        # current_round tracks COMPLETED rounds.
+        # Next round to generate is current_round + 1
+        next_round_num = self.current_round + 1
         
         # Get round plan from blueprint
         if self.blueprint:
-            round_plan = self.blueprint.get_current_round(self.current_round)
+            round_plan = self.blueprint.get_current_round(next_round_num)
             if round_plan:
                 self.current_round_plan = round_plan
-                logger.info(f"Round {self.current_round}: {round_plan.area} - {round_plan.focus}")
+                logger.info(f"Round {next_round_num}: {round_plan.area} - {round_plan.focus}")
         
         # Try AI generation first
         question = None
@@ -153,6 +155,9 @@ class InterviewSession:
             'timestamp': time.time(),
             'round_plan': self.current_round_plan.to_dict() if self.current_round_plan else None,
         })
+        
+        # Increment completed rounds counter
+        self.current_round += 1
         
         logger.info(f"Question {self.current_round}/{self.rounds} generated")
         return question
@@ -223,8 +228,8 @@ class InterviewSession:
         # Template-based generation
         templates = self._get_mock_templates(area)
         
-        # Fill template with resume data
-        template = templates[(self.current_round - 1) % len(templates)]
+        # Pick template based on completed rounds (0-indexed for next round)
+        template = templates[self.current_round % len(templates)]
         
         # Extract project/company names
         project_name = strongest.get("name", "your project") if strongest else "your project"

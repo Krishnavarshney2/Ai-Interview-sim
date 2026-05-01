@@ -1041,21 +1041,20 @@ async def submit_answer(
                 })
             
             # Generate next mock question (use blueprint if available)
+            # current_round = completed rounds. Next round index = current_round (0-indexed)
+            next_round_idx = current_round  # e.g. after round 1 complete, idx=1 -> round 2
             blueprint_data = session_data.get("blueprint", {})
             rounds_plan = blueprint_data.get("rounds", []) if isinstance(blueprint_data, dict) else []
             
-            # Use blueprint for fallback if available
-            blueprint_data = session_data.get("blueprint", {})
-            rounds_plan = blueprint_data.get("rounds", []) if isinstance(blueprint_data, dict) else []
-            if rounds_plan and current_round < len(rounds_plan):
-                round_plan_dict = rounds_plan[current_round]
+            if rounds_plan and next_round_idx < len(rounds_plan):
+                round_plan_dict = rounds_plan[next_round_idx]
                 from interview_blueprint import RoundPlan
                 round_plan = RoundPlan(**round_plan_dict)
                 next_question = _generate_mock_question_with_blueprint(
-                    role, current_round + 1, resume_data, round_plan
+                    role, next_round_idx + 1, resume_data, round_plan
                 )
             else:
-                next_question = _generate_mock_question(role, current_round + 1, resume_data)
+                next_question = _generate_mock_question(role, next_round_idx + 1, resume_data)
             
             # Save next question to DB
             await InterviewQuestionRepository.create(
@@ -1076,6 +1075,9 @@ async def submit_answer(
         try:
             # Record in LLM session
             session.provide_answer(answer_data.answer)
+            
+            # Generate follow-up based on answer quality
+            followup = session.get_followup(answer_data.answer)
             
             # Check if interview complete
             if session.current_round >= session.rounds:
@@ -1117,7 +1119,7 @@ async def submit_answer(
                     "message": "Interview complete"
                 })
             
-            # Generate next question
+            # Generate next question (increments session.current_round)
             next_question = session.ask_question()
             
             if not next_question:
@@ -1126,31 +1128,27 @@ async def submit_answer(
             # Save next question to DB
             await InterviewQuestionRepository.create(
                 db, PyUUID(interview_id),
-                round_number=session.current_round + 1,
+                round_number=session.current_round,
                 question=next_question
             )
             
             # Update interview round count
             await InterviewRepository.increment_round(db, PyUUID(interview_id))
             
-            # Check for follow-up
-            followup = None
-            if session.history and session.history[-1].get('followup'):
-                followup = session.history[-1]['followup']
-                # Update DB with followup
-                if current_question:
-                    await InterviewQuestionRepository.record_answer(
-                        db, current_question.id, answer_data.answer,
-                        followup_question=followup
-                    )
+            # Record answer with follow-up in DB (followup was generated before ask_question)
+            if current_question and followup:
+                await InterviewQuestionRepository.record_answer(
+                    db, current_question.id, answer_data.answer,
+                    followup_question=followup
+                )
             
-            logger.info(f"Answer recorded for interview {interview_id}, round {session.current_round + 1}")
+            logger.info(f"Answer recorded for interview {interview_id}, round {session.current_round}")
             
             return JSONResponse({
                 "success": True,
                 "nextQuestion": next_question,
                 "followup": followup,
-                "round": session.current_round + 1,
+                "round": session.current_round,
                 "totalRounds": session.rounds,
                 "isComplete": False,
                 "message": "Answer recorded"
